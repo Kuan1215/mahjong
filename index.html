@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>麻將點數（即時讀取 Google 試算表）</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap">
+<style>
+:root{--bg:#f4f5f1;--panel:#fff;--ink:#1d2b25;--mute:#6b7a72;--line:#dfe3dc;--win:#2a7f62;--lose:#b5342c;--accent:#2a7f62;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121c17;--panel:#1a2822;--ink:#e8efe9;--mute:#98a89f;--line:#2b3b34;--win:#4cc79b;--lose:#ee7a70;--accent:#4cc79b}}
+:root[data-theme="dark"]{--bg:#121c17;--panel:#1a2822;--ink:#e8efe9;--mute:#98a89f;--line:#2b3b34;--win:#4cc79b;--lose:#ee7a70;--accent:#4cc79b}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;line-height:1.6}
+main{max-width:920px;margin:0 auto;padding:28px 16px 48px}
+h1{font-size:1.7rem;margin:0 0 4px}
+.sub{color:var(--mute);margin:0 0 12px}
+.bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:18px;color:var(--mute);font-size:.88rem}
+button,a.btn{font:inherit;font-size:.88rem;cursor:pointer;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:5px 12px;text-decoration:none}
+button:hover,a.btn:hover{border-color:var(--accent)}
+.err{display:none;background:var(--panel);border:1px solid var(--lose);color:var(--lose);border-radius:8px;padding:12px 14px;margin-bottom:18px;font-size:.92rem}
+section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 18px 14px;margin-bottom:18px}
+h2{font-size:1.05rem;margin:0 0 2px}
+.note{color:var(--mute);font-size:.88rem;margin:0 0 12px}
+.box{position:relative;height:300px}.tall{height:340px}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:400px;font-variant-numeric:tabular-nums}
+th,td{padding:8px 10px;text-align:right;border-bottom:1px solid var(--line)}
+th:nth-child(-n+2),td:nth-child(-n+2){text-align:left}
+th{color:var(--mute);font-weight:500;font-size:.85rem}
+.w{color:var(--win);font-weight:700}.l{color:var(--lose);font-weight:700}
+</style>
+</head>
+<body>
+<main>
+<h1 id="h">載入中…</h1>
+<p class="sub" id="sub"></p>
+<div class="bar"><span id="st">尚未讀取</span><button id="rf">重新整理</button><a class="btn" id="ed" target="_blank" rel="noopener">開啟試算表編輯</a></div>
+<div class="err" id="err"></div>
+
+<section><h2>總點數排名</h2><p class="note">綠色為贏、紅色為輸。</p>
+<div class="box"><canvas id="c1" role="img" aria-label="總點數排名"></canvas></div></section>
+<section><h2>每場點數</h2><p class="note">每場每人的輸贏。</p>
+<div class="box tall"><canvas id="c2" role="img" aria-label="每場點數"></canvas></div></section>
+<section><h2>累積點數走勢</h2><p class="note">沒打的場次視為點數不變。</p>
+<div class="box tall"><canvas id="c3" role="img" aria-label="累積點數走勢"></canvas></div></section>
+<section><h2>數據總表</h2><div class="scroll"><table id="t"></table></div></section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+/* ===== 設定：換試算表只要改這裡 ===== */
+const SHEET_ID="1zYdsTOgsLTWqWbb3Tg-MLn4rdo_jyhFI2sRfxqk8q3c";
+const SHEET_TAB="資料";        // 讀取的工作表名稱
+const REFRESH_SEC=30;          // 自動更新間隔（秒）
+/* =================================== */
+
+/*PARSE_START*/
+const num=v=>{v=String(v==null?"":v).trim().replace("−","-").replace(/,/g,"");if(v==="")return null;const n=Number(v);return isFinite(n)?n:null};
+function parseCSV(t){const R=[];let r=[],f="",q=false;
+ for(let i=0;i<t.length;i++){const c=t[i];
+  if(q){if(c==='"'){if(t[i+1]==='"'){f+='"';i++}else q=false}else f+=c}
+  else if(c==='"')q=true;
+  else if(c===","){r.push(f);f=""}
+  else if(c==="\n"||c==="\r"){if(c==="\r"&&t[i+1]==="\n")i++;r.push(f);R.push(r);r=[];f=""}
+  else f+=c}
+ if(f!==""||r.length){r.push(f);R.push(r)}return R}
+function parseSheet(N0,G0,S){
+ const N=N0[0]||[],Gm=G0[0]||[],cols=[];
+ for(let c=0;c<N.length;c++){const n=String(N[c]==null?"":N[c]).trim();if(n==="該場加總"||n==="檢查")break;if(n)cols.push(c)}
+ if(!cols.length)throw new Error("玩家那一列（B4 起）沒有名字");
+ const players=cols.map(c=>({n:String(N[c]).trim(),g:num(Gm[c])}));
+ const sessions=[];
+ S.forEach(row=>{if(/^第/.test(String(row[0]==null?"":row[0]).trim()))sessions.push(cols.map(c=>num(row[c+1])))});
+ let last=-1;sessions.forEach((s,k)=>{if(s.some(v=>v!==null))last=k});
+ return{players,sessions:sessions.slice(0,last+1)};
+}
+/*PARSE_END*/
+
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmt=n=>(n>0?"+":"")+n;
+const PAL=["#2a7f62","#c9a227","#6a8caf","#b5342c","#8a5fa8","#d9792b","#4a9fb5","#8c8c5a"];
+let D=null,last="",charts=[];
+$("ed").href="https://docs.google.com/spreadsheets/d/"+SHEET_ID+"/edit";
+
+function calc(){
+ const P=D.players,tot=P.map((_,i)=>D.sessions.reduce((a,r)=>a+(r[i]||0),0));
+ const order=[...tot.keys()].sort((a,b)=>tot[b]-tot[a]||a-b),rank=[];order.forEach((i,r)=>rank[i]=r+1);
+ const act=D.sessions.map(r=>r.some(v=>v!==null));
+ const cum=P.map((_,i)=>{let t=0;return D.sessions.map((r,k)=>{t+=r[i]||0;return act[k]?t:null})});
+ return{tot,order,rank,cum};
+}
+const vl={id:"vl",afterDatasetsDraw(c){const x=c.ctx;x.save();x.font="700 13px sans-serif";x.textBaseline="middle";
+ c.getDatasetMeta(0).data.forEach((b,i)=>{const v=c.data.datasets[0].data[i];x.fillStyle=css("--ink");
+  x.textAlign=v>=0?"left":"right";x.fillText(fmt(v),b.x+(v>=0?8:-8),b.y)});x.restore()}};
+function draw(){
+ const C=calc(),P=D.players;
+ charts.forEach(c=>c.destroy());charts=[];
+ Chart.defaults.color=css("--mute");
+ Chart.defaults.font.family='"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif';
+ const ink=css("--ink"),grid={color:css("--line")},base={responsive:true,maintainAspectRatio:false,animation:false};
+ const col=i=>PAL[i%PAL.length],labs=D.sessions.map((_,k)=>"第 "+(k+1)+" 場");
+ charts.push(new Chart("c1",{type:"bar",plugins:[vl],data:{labels:C.order.map(i=>C.rank[i]+" "+P[i].n),
+  datasets:[{data:C.order.map(i=>C.tot[i]),borderRadius:4,backgroundColor:C.order.map(i=>C.tot[i]>=0?css("--win"):css("--lose"))}]},
+  options:{...base,indexAxis:"y",layout:{padding:{right:40,left:8}},plugins:{legend:{display:false}},
+   scales:{x:{grid,grace:"12%"},y:{grid:{display:false},ticks:{color:ink,font:{size:14}}}}}}));
+ charts.push(new Chart("c2",{type:"bar",data:{labels:labs,datasets:P.map((p,i)=>({label:p.n,data:D.sessions.map(r=>r[i]),backgroundColor:col(i),borderRadius:3}))},
+  options:{...base,plugins:{legend:{position:"bottom"}},scales:{x:{grid:{display:false}},y:{grid}}}}));
+ charts.push(new Chart("c3",{type:"line",data:{labels:["開局",...labs],datasets:P.map((p,i)=>({label:p.n,data:[0,...C.cum[i]],borderColor:col(i),backgroundColor:col(i),tension:.15,pointRadius:4,spanGaps:false}))},
+  options:{...base,plugins:{legend:{position:"bottom"}},scales:{x:{grid:{display:false}},y:{grid}}}}));
+ const top=C.order[0];
+ $("h").textContent=D.sessions.length?`${P[top].n} 領先 ${fmt(C.tot[top])} 點`:"麻將點數";
+ $("sub").textContent=`${P.length} 位玩家、${D.sessions.length} 場`;
+ $("t").innerHTML="<tr><th>名次</th><th>玩家</th><th>點數</th><th>將數</th><th>每將平均</th></tr>"+C.order.map(i=>{
+  const g=P[i].g||0,a=g?(C.tot[i]/g).toFixed(1):"–";
+  return`<tr><td>${C.rank[i]}</td><td>${esc(P[i].n)}</td><td class="${C.tot[i]>=0?"w":"l"}">${fmt(C.tot[i])}</td><td>${g}</td><td>${g&&a>0?"+":""}${a}</td></tr>`}).join("");
+}
+let seq=0;
+/* 用 script 標籤載入 Google 的 JSON 回應（JSONP），不受跨網站讀取限制 */
+function gv(range){return new Promise((res,rej)=>{
+ const cb="gv"+(++seq),sc=document.createElement("script");let t;
+ const done=()=>{delete window[cb];sc.remove();clearTimeout(t)};
+ t=setTimeout(()=>{done();rej(new Error("連線逾時（可能是網路不通，或試算表沒有開放給知道連結的任何人）"))},15000);
+ window[cb]=r=>{done();
+  if(!r||r.status!=="ok"){rej(new Error((r&&r.errors&&r.errors[0]&&(r.errors[0].detailed_message||r.errors[0].message))||"Google 回傳錯誤"));return}
+  res(((r.table&&r.table.rows)||[]).map(row=>(row.c||[]).map(c=>c?c.v:null)))};
+ sc.onerror=()=>{done();rej(new Error("無法連線到 Google（請確認網路，並關閉會擋請求的外掛）"))};
+ sc.src=`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json;responseHandler:${cb}&headers=0&sheet=${encodeURIComponent(SHEET_TAB)}&range=${range}&_=${Date.now()}`;
+ document.head.appendChild(sc)})}
+async function load(manual){
+ try{
+  /* 分三段讀：Google 同一欄混有數字和文字時會丟掉文字，所以名字、將數、點數分開讀 */
+  const [n,g,sc]=await Promise.all([gv("B4:K4"),gv("B3:K3"),gv("A5:K34")]);
+  const d=parseSheet(n,g,sc),key=JSON.stringify(d);
+  $("err").style.display="none";
+  if(key!==last||!D){D=d;last=key;draw()}
+  $("st").textContent="最後更新："+new Date().toLocaleTimeString("zh-TW")+"（每 "+REFRESH_SEC+" 秒自動更新）";
+ }catch(e){
+  const m=$("err");m.style.display="block";
+  m.textContent="讀取失敗："+e.message+"。請確認試算表共用設定是「知道連結的任何人」、工作表名稱是「"+SHEET_TAB+"」，並用瀏覽器直接開啟這個檔案（不要在 Claude 預覽視窗裡開）。";
+  if(!D)$("h").textContent="無法讀取資料";
+ }
+}
+$("rf").onclick=()=>load(true);
+setInterval(()=>{if(!document.hidden)load()},REFRESH_SEC*1000);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)load()});
+matchMedia("(prefers-color-scheme:dark)").addEventListener("change",()=>D&&draw());
+load();
+</script>
+</body>
+</html>
